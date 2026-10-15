@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<!--
+Emulador de Game Boy (DMG), archivo único. v1.0
+ALCANCE: Game Boy original. Los juegos .gbc compatibles con DMG corren en modo monocromo;
+los exclusivos de Game Boy Color NO están soportados. La opción «paleta estilo GBC» solo cambia colores.
+CARTUCHOS: sin mapper, MBC1, MBC2, MBC3 (sin reloj RTC) y MBC5. Otros tipos se rechazan con un aviso.
+PARTIDA GUARDADA (RAM del cartucho): localStorage + exportar/importar .sav. NO hay estados de máquina (save states).
+SONIDO: 4 canales vía ScriptProcessor (obsoleto pero universal). CABLE LINK: WebRTC manual; no funciona si la red bloquea P2P.
+LÍMITES CONOCIDOS: sin bloqueo de VRAM/OAM por modo PPU, sin bug de OAM, APU no exacta (dmg_sound 3/12), STAT simplificado, sin RTC, MBC1 multicart por detección.
+-->
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Game Boy</title>
+<style>
+:root{--bg:#e6e3da;--ink:#2b2b2b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181b;--ink:#d8d8d8;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#17181b;--ink:#d8d8d8;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px 0 28px;min-height:100vh}
+.load{background:#2a2f7a;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:600}
+.load input,.sm input{display:none}
+.bar{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:0 12px;max-width:430px}
+.sm{background:#3a3d46;color:#fff;border:0;border-radius:8px;padding:9px 13px;font:600 13px system-ui,sans-serif;cursor:pointer}
+.gb{width:min(94vw,400px);background:#c8c5bb;border-radius:14px 14px 70px 14px;padding:22px 22px 34px;box-shadow:inset -3px -3px 0 #a9a69b,inset 2px 2px 0 #e2dfd5,0 12px 30px #0006;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.bezel{background:#6b6a78;border-radius:10px 10px 40px 10px;padding:18px 26px 10px}
+.lcd{position:relative;background:#9bbc0f;border:2px solid #3d3d48}
+canvas{display:block;width:100%;aspect-ratio:160/144;image-rendering:pixelated}
+#msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:12px;color:#0f380f;font:700 13px/1.4 ui-monospace,Menlo,monospace;cursor:pointer}
+.lab{color:#d8d6e6;font:600 8px/1 system-ui,sans-serif;letter-spacing:.08em;text-align:center;margin:9px 0 0}
+.logo{font:italic 800 26px "Trebuchet MS",system-ui,sans-serif;color:#2a2f7a;margin:16px 0 8px 6px}
+.ctl{display:flex;justify-content:space-between;align-items:center;padding:6px 4px 0}
+.dp{display:grid;grid-template-columns:repeat(3,40px);grid-template-rows:repeat(3,40px)}
+.dp i{background:transparent}.dp i.m{background:#2a2a2e}
+.k{touch-action:none;border:0;padding:0;color:inherit;font:inherit}
+.dp .k{background:#2a2a2e;border-radius:4px}
+.dp .k:active,.dp .on{background:#55555c}
+.ab{display:flex;gap:14px;transform:rotate(-25deg);margin-right:4px;padding-top:18px}
+.ab .k{width:54px;height:54px;border-radius:50%;background:#a3214f;box-shadow:0 3px 0 #6e1634;font:800 22px "Trebuchet MS",system-ui,sans-serif;color:#f3cfdb}
+.ab .k:active,.ab .on{transform:translateY(2px);box-shadow:none}
+.ab .b{margin-top:22px}
+.ss{display:flex;justify-content:center;gap:26px;margin-top:30px;transform:rotate(-25deg)}
+.ss .k{width:56px;height:14px;border-radius:8px;background:#8a877e;box-shadow:0 2px 0 #66645c}
+.ss .k:active,.ss .on{box-shadow:none;background:#777}
+.sw{display:flex;flex-direction:column;align-items:center;gap:7px}.sw span{font:700 12px "Trebuchet MS",system-ui,sans-serif;color:#2a2f7a}
+.lk{width:min(94vw,400px);display:flex;flex-direction:column;gap:8px;border:1px solid #8886;border-radius:10px;padding:12px;font-size:13px}
+.lk p{margin:0;line-height:1.45;opacity:.85}
+.lk textarea{width:100%;height:60px;resize:none;font:11px ui-monospace,monospace;border-radius:6px;padding:6px;border:1px solid #8886;background:transparent;color:inherit}
+[hidden]{display:none!important}
+#toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);transform:translateX(-50%);max-width:90vw;background:#000d;color:#fff;padding:9px 14px;border-radius:8px;font:13px/1.4 system-ui,sans-serif;z-index:9;display:none;text-align:center}
+#fx{display:none;position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);right:8px;z-index:5;width:38px;height:38px;border-radius:50%;border:0;background:#000a;color:#fff;font-size:16px}
+body.fs{padding:0;gap:0;height:100vh;overflow:hidden;touch-action:none}
+body.fs .bar,body.fs .hint,body.fs .lk{display:none!important}
+body.fs #fx{display:block}
+body.fs .gb{position:fixed;left:50%;top:50%;width:400px;max-width:none;margin:0;transform:translate(-50%,-50%) scale(var(--s,1))}
+@media (orientation:landscape){
+ body.fs .gb{width:auto;display:grid;grid-template-columns:170px 340px 170px;grid-template-rows:1fr auto;align-items:center;justify-items:center;border-radius:14px 14px 50px 14px;padding:22px}
+ body.fs .logo{display:none}
+ body.fs .ctl{display:contents}
+ body.fs .bezel{grid-column:2;grid-row:1/3;width:340px}
+ body.fs .dp{grid-column:1;grid-row:1}
+ body.fs .ab{grid-column:3;grid-row:1;margin:0}
+ body.fs .ss{grid-column:1;grid-row:2;margin:0}}
+.hint{font-size:12px;opacity:.7;max-width:380px;text-align:center;padding:0 16px;line-height:1.4}
+</style></head><body>
+<div class="bar">
+<label class="load">Cargar ROM<input type="file" id="f" accept=".gb,.gbc,.bin"></label>
+<select id="pal" class="sm" aria-label="Pantalla"><option value="0">Paleta verde (Game Boy)</option><option value="1">Paleta estilo Game Boy Color</option><option value="2">Paleta gris</option></select>
+<button id="snd" class="sm">Sonido: sí</button>
+<button id="fs" class="sm">Pantalla completa</button>
+<button id="lb" class="sm">Cable Link</button>
+<button id="sx" class="sm">Exportar .sav</button>
+<label class="sm">Importar .sav<input type="file" id="sv"></label>
+</div>
+<div class="lk" id="lk" hidden>
+<b>Cable Link: 2 jugadores por internet</b>
+<p>1) Uno pulsa «Crear código» y se lo envía al otro.<br>2) El otro lo pega abajo y pulsa «Conectar»; le saldrá un código de respuesta.<br>3) El primero pega esa respuesta y pulsa «Conectar». Luego, en el juego, usad la opción de cable (en Pokémon: Club Cable, en el Centro Pokémon).</p>
+<button id="lh" class="sm">Crear código</button>
+<textarea id="lo" readonly placeholder="Tu código aparecerá aquí"></textarea>
+<button id="lcp" class="sm">Copiar mi código</button>
+<textarea id="li" placeholder="Pega aquí el código de tu amigo"></textarea>
+<button id="lc" class="sm">Conectar</button>
+<button id="ld" class="sm">Desconectar</button>
+<span id="ls">Sin conexión</span>
+</div>
+<button id="fx" aria-label="Salir de pantalla completa">✕</button>
+<div id="toast" role="status"></div>
+<div class="gb">
+ <div class="bezel">
+  <div class="lcd"><canvas id="c" width="160" height="144"></canvas><div id="msg">Toca aquí o arrastra un ROM para empezar</div></div>
+  <p class="lab">DOT MATRIX WITH STEREO SOUND</p>
+ </div>
+ <div class="logo">Game Boy</div>
+ <div class="ctl">
+  <div class="dp"><i></i><button class="k" data-k="up" aria-label="Arriba"></button><i></i><button class="k" data-k="left" aria-label="Izquierda"></button><i class="m"></i><button class="k" data-k="right" aria-label="Derecha"></button><i></i><button class="k" data-k="down" aria-label="Abajo"></button><i></i></div>
+  <div class="ab"><button class="k b" data-k="b" aria-label="B">B</button><button class="k" data-k="a" aria-label="A">A</button></div>
+ </div>
+ <div class="ss"><div class="sw"><button class="k" data-k="select" aria-label="Select"></button><span>Select</span></div><div class="sw"><button class="k" data-k="start" aria-label="Start"></button><span>Start</span></div></div>
+</div>
+<p class="hint">Teclado: flechas, Z = A, X = B, Enter = Start, Shift = Select. Usa Exportar .sav para guardar una copia de tu partida.</p>
+<script>
+const $=id=>document.getElementById(id);
+const hex=x=>(0xFF000000|(x&255)<<16|(x>>8&255)<<8|x>>16)>>>0;
+const PAL=[0,0,0,0],PO=[[0,0,0,0],[0,0,0,0]];
+const PS=[[[0x9bbc0f,0x8bac0f,0x306230,0x0f380f]],[[0xFFFFFF,0x7BFF31,0x0063C5,0],[0xFFFFFF,0xFF8484,0x943A3A,0]],[[0xFFFFFF,0xAAAAAA,0x555555,0]]];
+function setPal(n){const q=PS[n],b=q[0],o=q[1]||b;[[PAL,b],[PO[0],o],[PO[1],o]].forEach(([d,v])=>v.forEach((x,i)=>d[i]=hex(x)))}
+setPal(0);
+const cv=$('c'),cx=cv.getContext('2d'),img=cx.createImageData(160,144),px=new Uint32Array(img.data.buffer);
+const vram=new Uint8Array(8192),wram=new Uint8Array(8192),oam=new Uint8Array(160),hram=new Uint8Array(128),io=new Uint8Array(128),ram=new Uint8Array(131072),R=new Uint8Array(8),bgc=new Uint8Array(160);
+let rom,nb=2,mbc=0,lb=1,hb=0,rbk=1,rambk=0,m1=0,ramEn=0,on=0,last=0,acc=0;
+let F,SP,PC,ime,imeN,halt,cy,div,tc,ly,lc,mode,wl,jp={d:15,b:15};
+
+/* ---------- memoria ---------- */
+function ior(r){switch(r){
+ case 0:{const s=io[0];let v=15;if(!(s&16))v&=jp.d;if(!(s&32))v&=jp.b;return 0xC0|(s&0x30)|v}
+ case 4:return div>>8;
+ case 0x26:return 0x70|(pw<<7)|C[0].on|C[1].on<<1|C[2].on<<2|C[3].on<<3;
+ case 15:return io[15]|0xE0;
+ case 0x41:return 0x80|(io[0x41]&0x78)|(ly==io[0x45]?4:0)|(io[0x40]&128?mode:0);
+ case 0x44:return ly;
+ default:return io[r]|UM[r]}}
+const UM=new Uint8Array(128).fill(255);
+[[0,0],[1,0],[4,0],[5,0],[6,0],[2,0x7E],[7,0xF8],[0x10,0x80],[0x11,0x3F],[0x12,0],[0x14,0xBF],[0x16,0x3F],[0x17,0],[0x19,0xBF],[0x1A,0x7F],[0x1C,0x9F],[0x1E,0xBF],[0x21,0],[0x22,0],[0x23,0xBF],[0x24,0],[0x25,0],[0x40,0],[0x42,0],[0x43,0],[0x45,0],[0x46,0],[0x47,0],[0x48,0],[0x49,0],[0x4A,0],[0x4B,0]].forEach(([a,k])=>UM[a]=k);for(let i=0x30;i<0x40;i++)UM[i]=0;
+function iow(r,v){switch(r){
+ case 0:io[0]=v&0x30;break;
+ case 2:serialW(v);break;
+ case 5:if(!rlJ){rlT=0;io[5]=v}break;
+ case 6:io[6]=v;if(rlJ)io[5]=v;break;
+ case 7:{const o=io[7],f=x=>(x&4)&&(div>>[9,3,5,7][x&3]&1);if(f(o)&&!f(v))tinc();io[7]=v;break}
+ case 4:if((io[7]&4)&&(div>>[9,3,5,7][io[7]&3]&1))tinc();div=0;break;
+ case 15:io[15]=v&31;break;
+ case 0x40:{const o=io[0x40];io[0x40]=v;if(!(v&128)){ly=0;lc=0;mode=0;sl=0}else if(!(o&128)){lc=LON;lof=1}break}
+ case 0x41:io[0x41]=v;statChk();break;
+ case 0x45:io[0x45]=v;statChk();break;
+ case 0x44:break;
+ case 0x46:io[0x46]=v;dmaNS=v;dmaD=DMAD;break;
+ default:if(r>=0x10&&r<0x27)apuw(r,v);else io[r]=v}}
+function kram(){return mbc==1?(m1?hb:0):rambk}
+function rd(a){
+ if(a<0x4000)return mbc==1&&m1?rom[((hb<<(mc?4:5))%nb)*16384+a]:rom[a];
+ if(a<0x8000)return rom[(rbk%nb)*16384+a-0x4000];
+ if(a<0xA000)return vram[a-0x8000];
+ if(a<0xC000){if(mbc==2)return ramEn?ram[a&511]|0xF0:255;const k=kram();return ramEn&&!(mbc==3&&k>3)?ram[(k*8192+a-0xA000)%(ssz||8192)]:255}
+ if(a<0xE000)return wram[a-0xC000];
+ if(a<0xFE00)return wram[a-0xE000];
+ if(a<0xFEA0)return oam[a-0xFE00];
+ if(a<0xFF00)return 255;
+ if(a<0xFF80)return ior(a&127);
+ return hram[a-0xFF80]}
+function wrom(a,v){
+ if(mbc==2){if(a<0x4000){if(a&0x100)lb=(v&15)||1;else ramEn=(v&15)==10;rbk=lb}return}
+ if(a<0x2000){ramEn=(v&15)==10;return}
+ if(!mbc)return;
+ if(a<0x4000){if(mbc==3)lb=(v&127)||1;else if(mbc==1)lb=(v&31)||1;else if(a<0x3000)lb=v;else hb=v&1}
+ else if(a<0x6000){if(mbc==1)hb=v&3;else rambk=v&15}
+ else if(mbc==1)m1=v&1;
+ rbk=mbc==1?(mc?hb<<4|lb&15:hb<<5|lb):mbc==5?(hb<<8|lb):lb}
+function wr(a,v){
+ if(a<0x8000)return wrom(a,v);
+ if(a<0xA000){vram[a-0x8000]=v;return}
+ if(a<0xC000){if(mbc==2){if(ramEn){ram[a&511]=v&15;dirty=1}return}const k=kram();if(ramEn&&!(mbc==3&&k>3)){ram[(k*8192+a-0xA000)%(ssz||8192)]=v;dirty=1}return}
+ if(a<0xE000){wram[a-0xC000]=v;return}
+ if(a<0xFE00){wram[a-0xE000]=v;return}
+ if(a<0xFEA0){oam[a-0xFE00]=v;return}
+ if(a<0xFF00)return;
+ if(a<0xFF80){iow(a&127,v);return}
+ hram[a-0xFF80]=v}
+const rb=a=>{T(4);return crd(a&65535)};
+const wb=(a,v)=>{T(4);a&=65535;if(dmaOn&&a>=0xFE00&&a<0xFEA0)return;wr(a,v&255)};
+const f8=()=>{T(4);const v=crd(PC);if(hbug)hbug=0;else PC=PC+1&65535;return v};
+const f16=()=>{const l=f8();return l|f8()<<8};
+function push(v){SP=SP-1&65535;wb(SP,v>>8);SP=SP-1&65535;wb(SP,v)}
+function pop(){const l=rb(SP);SP=SP+1&65535;const h=rb(SP);SP=SP+1&65535;return h<<8|l}
+const gr=i=>i==3?SP:R[i*2]<<8|R[i*2+1];
+const sr=(i,v)=>{if(i==3)SP=v;else{R[i*2]=v>>8;R[i*2+1]=v}};
+const g8=i=>i==6?rb(gr(2)):R[i];
+const s8=(i,v)=>{if(i==6)wb(gr(2),v);else R[i]=v};
+const cc=i=>i==0?!(F&128):i==1?!!(F&128):i==2?!(F&16):!!(F&16);
+
+/* ---------- CPU ---------- */
+function alu(o,v){const a=R[7],c=F>>4&1;let r,k;
+ switch(o){
+ case 0:case 1:k=o&c;r=a+v+k;F=((r&255)?0:128)|((((a&15)+(v&15)+k)>15)<<5)|((r>255)<<4);R[7]=r;break;
+ case 2:case 3:case 7:k=o==3?c:0;r=a-v-k;F=64|((r&255)?0:128)|((((a&15)-(v&15)-k)<0)<<5)|((r<0)<<4);if(o!=7)R[7]=r;break;
+ case 4:R[7]=a&v;F=(R[7]?0:128)|32;break;
+ case 5:R[7]=a^v;F=R[7]?0:128;break;
+ case 6:R[7]=a|v;F=R[7]?0:128}}
+function cb(){const op=f8(),x=op>>6,y=op>>3&7,z=op&7,v=g8(z);
+ if(x==1){F=(F&16)|32|((v>>y&1)?0:128);return}
+ if(x==2){s8(z,v&~(1<<y));return}
+ if(x==3){s8(z,v|1<<y);return}
+ const c=F>>4&1;let r,co;
+ switch(y){
+ case 0:co=v>>7;r=v<<1|co;break;
+ case 1:co=v&1;r=v>>1|co<<7;break;
+ case 2:co=v>>7;r=v<<1|c;break;
+ case 3:co=v&1;r=v>>1|c<<7;break;
+ case 4:co=v>>7;r=v<<1;break;
+ case 5:co=v&1;r=v>>1|v&128;break;
+ case 6:co=0;r=v<<4|v>>4;break;
+ default:co=v&1;r=v>>1}
+ r&=255;F=(r?0:128)|co<<4;s8(z,r)}
+function spe(){const e=f8()<<24>>24;F=((((SP&15)+(e&15))>15)<<5)|((((SP&255)+(e&255))>255)<<4);return SP+e&65535}
+function exec(){
+ const op=f8(),x=op>>6,y=op>>3&7,z=op&7;
+ if(x==1){if(op==0x76){if(!ime&&(io[15]&hram[127]&31))hbug=1;else halt=1;return}s8(y,g8(z));return}
+ if(x==2){alu(y,g8(z));return}
+ if(x==0)switch(z){
+ case 0:
+  if(y==0||y==2)return;
+  if(y==1){const a=f16();wb(a,SP);wb(a+1,SP>>8);return}
+  {const e=f8()<<24>>24;if(y==3||cc(y-4)){PC=PC+e&65535;T(4)}return}
+ case 1:
+  if(y&1){const h=gr(2),v=gr(y>>1),r=h+v;F=(F&128)|((((h&4095)+(v&4095))>4095)<<5)|((r>65535)<<4);sr(2,r&65535);T(4)}
+  else sr(y>>1,f16());
+  return;
+ case 2:{const i=y>>1,a=gr(i>2?2:i);if(y&1)R[7]=rb(a);else wb(a,R[7]);if(i==2)sr(2,a+1&65535);if(i==3)sr(2,a-1&65535);return}
+ case 3:sr(y>>1,gr(y>>1)+(y&1?-1:1)&65535);T(4);return;
+ case 4:{const v=g8(y),r=v+1&255;F=(F&16)|(r?0:128)|(((v&15)==15)<<5);s8(y,r);return}
+ case 5:{const v=g8(y),r=v-1&255;F=(F&16)|64|(r?0:128)|(((v&15)==0)<<5);s8(y,r);return}
+ case 6:s8(y,f8());return;
+ default:{const a=R[7],c=F>>4&1;let co;
+  switch(y){
+  case 0:co=a>>7;R[7]=a<<1|co;F=co<<4;break;
+  case 1:co=a&1;R[7]=a>>1|co<<7;F=co<<4;break;
+  case 2:co=a>>7;R[7]=a<<1|c;F=co<<4;break;
+  case 3:co=a&1;R[7]=a>>1|c<<7;F=co<<4;break;
+  case 4:{let v=a;if(!(F&64)){if((F&16)||v>0x99){v+=0x60;F|=16}if((F&32)||(a&15)>9)v+=6}else{if(F&16)v-=0x60;if(F&32)v-=6}R[7]=v;F=(F&0x50)|(R[7]?0:128);break}
+  case 5:R[7]=a^255;F|=0x60;break;
+  case 6:F=(F&128)|16;break;
+  default:F=(F&128)|((F&16)^16)}
+  return}}
+ switch(z){
+ case 0:
+  if(y<4){T(4);if(cc(y)){PC=pop();T(4)}return}
+  if(y==4){wb(0xFF00+f8(),R[7]);return}
+  if(y==6){R[7]=rb(0xFF00+f8());return}
+  if(y==5){SP=spe();T(8)}else{sr(2,spe());T(4)}
+  return;
+ case 1:
+  if(!(y&1)){const i=y>>1,v=pop();if(i==3){R[7]=v>>8;F=v&0xF0}else sr(i,v)}
+  else if(y==1){PC=pop();T(4)}
+  else if(y==3){PC=pop();ime=1;T(4)}
+  else if(y==5)PC=gr(2);
+  else{SP=gr(2);T(4)}
+  return;
+ case 2:
+  if(y<4){const a=f16();if(cc(y)){PC=a;T(4)}}
+  else if(y==4)wb(0xFF00+R[1],R[7]);
+  else if(y==5)wb(f16(),R[7]);
+  else if(y==6)R[7]=rb(0xFF00+R[1]);
+  else R[7]=rb(f16());
+  return;
+ case 3:
+  if(y==0){PC=f16();T(4)}else if(y==1)cb();else if(y==6){ime=0;imeN=-1}else if(y==7)imeN=1;
+  return;
+ case 4:if(y<4){const a=f16();if(cc(y)){T(4);push(PC);PC=a}}return;
+ case 5:
+  if(!(y&1)){const i=y>>1;T(4);push(i==3?R[7]<<8|F:gr(i))}
+  else if(y==1){const a=f16();T(4);push(PC);PC=a}
+  return;
+ case 6:alu(y,f8());return;
+ default:T(4);push(PC);PC=y*8}}
+
+/* ---------- PPU ---------- */
+function setMode(m){if(m==mode)return;mode=m;
+ if(m==0&&ly<144)line();
+ statChk()}
+let sl=0;
+function statChk(){const s=io[0x41],m=io[0x40]&128?mode:0,l=(m==0&&s&8)||(m==1&&s&16)||(m==2&&s&32)||(ly==io[0x45]&&s&64);if(l&&!sl)io[15]|=2;sl=l?1:0}
+const PA=0,PB=80,PL=172,LON=0;let lof=0;
+function ppu(c){
+ if(!(io[0x40]&128))return;
+ lc+=c;let w=0;
+ if(lc>=456){lc-=456;ly++;w=1;lof=0;
+  if(ly==144){setMode(1);io[15]|=1}else if(ly>153){ly=0;wl=0}}
+ if(w)statChk();
+ if(ly<144){const e=PB+PL+(io[0x43]&7);setMode(lc<PA||(lof&&lc<PB)?0:lc<PB?2:lc<e?3:0)}}
+function line(){
+ const L=io[0x40],o=ly*160,bgp=io[0x47];let win=0;
+ if(L&1){
+  const y=ly+io[0x42]&255,mb=L&8?0x1C00:0x1800,sx=io[0x43];
+  for(let x=0;x<160;x++){
+   const p=x+sx&255,t=vram[mb+(y>>3<<5)+(p>>3)],a=L&16?t*16:0x1000+(t<<24>>24)*16+0,l=(y&7)*2,b=7-(p&7);
+   const c=((vram[a+l+1]>>b&1)<<1)|(vram[a+l]>>b&1);bgc[x]=c;px[o+x]=PAL[bgp>>(c*2)&3]}
+  const wy=io[0x4A],wx=io[0x4B]-7;
+  if(L&32&&ly>=wy&&wx<160){
+   const wm=L&64?0x1C00:0x1800;
+   for(let x=Math.max(wx,0);x<160;x++){
+    const p=x-wx,t=vram[wm+(wl>>3<<5)+(p>>3)],a=L&16?t*16:0x1000+(t<<24>>24)*16,l=(wl&7)*2,b=7-(p&7);
+    const c=((vram[a+l+1]>>b&1)<<1)|(vram[a+l]>>b&1);bgc[x]=c;px[o+x]=PAL[bgp>>(c*2)&3]}
+   wl++}
+ }else for(let x=0;x<160;x++){bgc[x]=0;px[o+x]=PAL[0]}
+ if(L&2){
+  const h=L&4?16:8,sp=[];
+  for(let i=0;i<40&&sp.length<10;i++){const y=oam[i*4]-16;if(ly>=y&&ly<y+h)sp.push({i,x:oam[i*4+1]-8,y,t:oam[i*4+2],f:oam[i*4+3]})}
+  sp.sort((a,b)=>a.x-b.x||a.i-b.i);
+  for(let n=sp.length-1;n>=0;n--){
+   const s=sp[n];let r=ly-s.y;if(s.f&64)r=h-1-r;
+   const a=(h==16?s.t&0xFE:s.t)*16+r*2,pal=io[s.f&16?0x49:0x48];
+   for(let i=0;i<8;i++){const xx=s.x+i;if(xx<0||xx>159)continue;
+    const b=s.f&32?i:7-i,c=((vram[a+1]>>b&1)<<1)|(vram[a]>>b&1);
+    if(!c||(s.f&128&&bgc[xx]))continue;
+    px[o+xx]=PO[s.f>>4&1][pal>>(c*2)&3]}}}}
+
+/* ---------- bucle principal ---------- */
+const DMAD=2;let dmaOn=0,dmaPos=0,dmaSrc=0,dmaB=0,dmaD=0,dmaNS=0;
+function dmaTick(){
+ if(dmaOn){let a=(dmaSrc<<8)+dmaPos;if(dmaSrc>=0xE0)a-=0x2000;oam[dmaPos]=dmaB=rd(a);if(++dmaPos>=160)dmaOn=0}
+ if(dmaD>0&&--dmaD==0){dmaOn=1;dmaPos=0;dmaSrc=dmaNS}}
+function crd(a){if(dmaOn){if(a>=0xFE00&&a<0xFEA0)return 255;
+ const cb=a>=0xFE00?2:(a>=0x8000&&a<0xA000)?1:0,sb=(dmaSrc>=0x80&&dmaSrc<0xA0)?1:0;if(cb==sb)return dmaB}
+ return rd(a)}
+function T(n){cy+=n;for(let k=0;k<n;k+=4)dmaTick();
+ rlJ=0;if(rlT>0&&(rlT-=n)<=0){rlT=0;rlJ=1;io[5]=io[6];io[15]|=4}
+ if(io[7]&4){const q=[10,4,6,8][io[7]&3],k=((div+n)>>q)-(div>>q);for(let i=0;i<k;i++)tinc()}
+  if(scT>0&&(scT-=((div+n+4)>>9)-((div+4)>>9))<=0){scT=0;sdone(255)}
+ div=div+n&65535;
+ ppu(n);apu(n)}
+function step(){
+ cy=0;const e=imeN;imeN=0;
+ const p=io[15]&hram[127]&31;let d=0;
+ if(p){halt=0;if(ime){ime=0;d=1;T(8);SP=SP-1&65535;wb(SP,PC>>8);const q=io[15]&hram[127]&31;let nb=-1;if(q){nb=0;while(!(q>>nb&1))nb++;io[15]&=~(1<<nb)}
+  SP=SP-1&65535;wb(SP,PC);PC=nb<0?0:0x40+nb*8;T(4)}}
+ if(!d){if(halt)T(4);else exec()}
+ if(e&&imeN!=-1)ime=1;if(imeN==-1)imeN=0}
+function frame(){let t=0;while(t<70224){step();t+=cy}}
+function loop(t){
+ requestAnimationFrame(loop);
+ if(!on)return;
+ acc+=Math.min(t-last,100);last=t;
+ let n=0;try{while(acc>=16.74){frame();acc-=16.74;n++}}catch(e){on=0;say('Error interno del emulador: '+e.message)}
+ if(n)cx.putImageData(img,0,0)}
+requestAnimationFrame(loop);
+
+/* ---------- carga de ROM ---------- */
+function load(d){
+ const er=chk(d);if(er){say(er);return}
+ lastData=d;nb=Math.max(2,Math.ceil(d.length/16384));
+ rom=new Uint8Array(nb*16384);rom.set(d);
+ const t=rom[0x147];
+ mbc=MB[t];mc=mbc==1&&nb==64&&[0x10,0x20,0x30].filter(b=>rom[b*16384+0x104]==0xCE&&rom[b*16384+0x105]==0xED).length>=2?1:0;
+ [vram,wram,oam,hram,io,ram,R].forEach(a=>a.fill(0));
+ lb=1;hb=0;rbk=1;rambk=0;m1=0;ramEn=0;jp={d:15,b:15};
+ R[7]=1;F=0xB0;R[0]=0;R[1]=0x13;R[2]=0;R[3]=0xD8;R[4]=1;R[5]=0x4D;SP=0xFFFE;PC=0x100;
+ ime=0;imeN=0;halt=0;div=0xABC8;tc=0;ly=0;lc=0;mode=0;wl=0;
+ io[0x40]=0x91;io[0x47]=0xFC;io[0x48]=0xFF;io[0x49]=0xFF;io[15]=0xE1;
+ px.fill(PAL[0]);cx.putImageData(img,0,0);initSave(t);initAudio();scT=0;wait=0;pendB=-1;if(actx)try{actx.resume()}catch(_){}
+ $('msg').style.display='none';acc=0;last=performance.now();on=1}
+async function pick(file){if(!file)return;try{load(new Uint8Array(await file.arrayBuffer()))}catch(e){say('No se pudo leer el archivo: '+(e&&e.message||e))}}
+$('f').onchange=e=>pick(e.target.files[0]);
+$('msg').onclick=()=>$('f').click();
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();pick(e.dataTransfer.files[0])});
+
+/* ---------- avisos y validación ---------- */
+function say(t){const e=$('toast');e.textContent=(e.style.display=='block'?e.textContent+' ':'')+t;e.style.display='block';clearTimeout(say.t);say.t=setTimeout(()=>{e.style.display='none'},7000)}
+const MB={0:0,8:0,9:0,1:1,2:1,3:1,5:2,6:2,15:3,16:3,17:3,18:3,19:3,25:5,26:5,27:5,28:5,29:5,30:5};
+function chk(d){
+ if(d.length<0x150)return 'El archivo no es un ROM de Game Boy (demasiado pequeño).';
+ if(d.length>8*1048576)return 'El archivo es demasiado grande para un ROM de Game Boy.';
+ const t=d[0x147];if(!(t in MB))return 'Cartucho no soportado (tipo 0x'+t.toString(16)+'). Soportados: sin mapper, MBC1, MBC2, MBC3 (sin reloj) y MBC5.';
+ let x=0;for(let i=0x134;i<=0x14C;i++)x=x-d[i]-1&255;
+ if(x!=d[0x14D])say('Aviso: el encabezado del ROM tiene un checksum incorrecto; el archivo puede estar dañado.');
+ else if(d[0x143]==0xC0)say('Aviso: juego exclusivo de Game Boy Color; no está soportado y puede verse mal.');
+ return ''}
+let rlT=0,hbug=0,rlJ=0,mc=0;
+function tinc(){const t=io[5]+1;if(t>255){io[5]=0;rlT=4}else io[5]=t}
+
+/* ---------- sonido ---------- */
+const C=[0,1,2,3].map(()=>({on:0,len:0,vol:0,et:0,ph:0,lf:0x7FFF,nt:0,sw:0,st:0,so:0}));
+let pw=1,fs=0,fsc=0,sc=0,cps=87,actx=null,mute=0,hpL=0,hpR=0,aw=0,ar=0,pl=0;
+const AB=new Float32Array(16384),DUTY=[1,0x81,0x87,0x7E];
+const fr=i=>io[[0x13,0x18,0x1D][i]]|(io[[0x14,0x19,0x1E][i]]&7)<<8;
+function trig(i){const c=C[i],b=[0x10,0x15,0x1A,0x1F][i];
+ c.on=1;if(!c.len)c.len=i==2?256:64;c.ph=0;
+ if(i==2){if(!(io[0x1A]&128))c.on=0}
+ else{c.vol=io[b+2]>>4;c.et=(io[b+2]&7)||8;if(!(io[b+2]&0xF8))c.on=0}
+ if(i==3){c.lf=0x7FFF;c.nt=0}
+ if(!i){const p=io[0x10]>>4&7,s=io[0x10]&7;c.neg=0;c.sw=fr(0);c.st=p||8;c.so=p||s;if(s&&(io[0x10]&8))c.neg=1;if(s&&!(io[0x10]&8)&&c.sw+(c.sw>>s)>2047)c.on=0}}
+function apuw(r,v){
+ if(r==0x26){const on=v>>7;if(on&&!pw)fs=0;pw=on;
+  if(!pw){C.forEach(c=>c.on=0);for(let i=0x10;i<0x26;i++){if(i==0x20||i==0x1B)continue;io[i]=(i==0x11||i==0x16)?io[i]&0x3F:0}}return}
+ if(!pw){if(r==0x11)C[0].len=64-(v&63);else if(r==0x16)C[1].len=64-(v&63);else if(r==0x1B){C[2].len=256-v;io[r]=v}else if(r==0x20){C[3].len=64-(v&63);io[r]=v}return}
+ const old=io[r];io[r]=v;if(r==0x10&&C[0].neg&&!(v&8))C[0].on=0;
+ if(r==0x11)C[0].len=64-(v&63);else if(r==0x16)C[1].len=64-(v&63);else if(r==0x1B)C[2].len=256-v;else if(r==0x20)C[3].len=64-(v&63);
+ else if(r==0x1A){if(!(v&128))C[2].on=0}
+ else if(r==0x12||r==0x17||r==0x21){if(!(v&0xF8))C[r==0x12?0:r==0x17?1:3].on=0}
+ else if(r==0x14||r==0x19||r==0x1E||r==0x23){const i=r==0x14?0:r==0x19?1:r==0x1E?2:3,c=C[i];
+  if(!(old&0x40)&&(v&0x40)&&c.len>0&&(fs&1)){if(--c.len==0&&!(v&128))c.on=0}
+  if(v&128){const z=c.len==0;trig(i);if(z&&(v&0x40)&&(fs&1))c.len--}}}
+function fstep(){const s=fs;fs=s+1&7;
+ if(!(s&1))for(let i=0;i<4;i++){const c=C[i];if(c.len>0&&(io[[0x14,0x19,0x1E,0x23][i]]&0x40)&&--c.len==0)c.on=0}
+ if(s==2||s==6){const c=C[0];if(c.on&&c.so&&--c.st<=0){const x=io[0x10],p=x>>4&7,sh=x&7;c.st=p||8;
+  if(p){const d=c.sw>>sh,nf=x&8?c.sw-d:c.sw+d;if(x&8)c.neg=1;if(nf>2047)c.on=0;else if(sh){c.sw=nf;io[0x13]=nf&255;io[0x14]=(io[0x14]&0xF8)|(nf>>8);if(!(x&8)&&nf+(nf>>sh)>2047)c.on=0}}}}
+ if(s==7)for(const i of[0,1,3]){const c=C[i],r=io[[0x12,0x17,0,0x21][i]];if((r&7)&&c.on&&--c.et<=0){c.et=r&7;if(r&8){if(c.vol<15)c.vol++}else if(c.vol>0)c.vol--}}}
+function gen(){let L=0,Rr=0;const pan=io[0x25],n=io[0x24];
+ for(let i=0;i<4;i++){const c=C[i];if(!c.on)continue;let a;
+  if(i==2){c.ph=(c.ph+cps/((2048-fr(2))*2))%32;const k=c.ph|0,b=io[0x30+(k>>1)],q=k&1?b&15:b>>4;a=q>>[4,0,1,2][io[0x1C]>>5&3]}
+  else if(i==3){const x=io[0x22],per=([8,16,32,48,64,80,96,112][x&7])<<(x>>4);c.nt+=cps;
+   while(c.nt>=per){c.nt-=per;const b=(c.lf&1)^(c.lf>>1&1);c.lf=c.lf>>1|b<<14;if(x&8)c.lf=(c.lf&~0x40)|b<<6}
+   a=(~c.lf&1)*c.vol}
+  else{c.ph=(c.ph+cps/((2048-fr(i))*4))%8;a=(DUTY[io[i?0x16:0x11]>>6]>>(c.ph|0)&1)*c.vol}
+  a/=15;if(pan>>i&1)Rr+=a;if(pan>>(i+4)&1)L+=a}
+ L*=((n>>4&7)+1)/8;Rr*=((n&7)+1)/8;
+ AB[aw]=(L-hpL)*0.2;AB[aw+1]=(Rr-hpR)*0.2;hpL+=(L-hpL)*0.0006;hpR+=(Rr-hpR)*0.0006;aw=(aw+2)&16383}
+function apu(c){fsc+=c;while(fsc>=8192){fsc-=8192;fstep()}
+ if(!actx)return;sc+=c;while(sc>=cps){sc-=cps;gen()}}
+function initAudio(){
+ C.forEach(c=>{c.on=0;c.len=0;c.ph=0;c.lf=0x7FFF});pw=1;fs=0;fsc=0;sc=0;io[0x24]=0x77;io[0x25]=0xF3;
+ if(actx)return;
+ try{actx=new(window.AudioContext||window.webkitAudioContext)();cps=4194304/actx.sampleRate;
+  const p=actx.createScriptProcessor(2048,0,2);
+  p.onaudioprocess=e=>{const l=e.outputBuffer.getChannelData(0),r=e.outputBuffer.getChannelData(1);
+   const n=(aw-ar)&16383;if(n>9000)ar=(aw-3200)&16383;if(!pl&&n>=3200)pl=1;
+   for(let i=0;i<l.length;i++){
+    if(pl&&ar!=aw){l[i]=mute?0:AB[ar];r[i]=mute?0:AB[ar+1];ar=(ar+2)&16383}
+    else{l[i]=r[i]=0;pl=0}}};
+  p.connect(actx.destination)}catch(e){actx=null;say('Audio no disponible: '+(e&&e.message||e))}}
+
+/* ---------- guardado ---------- */
+let lastData,pend,skey='',ssz=0,dirty=0;
+let warned=0;
+function initSave(t){warned=0;
+ ssz=t==5||t==6?512:Math.min(131072,[0,2048,8192,32768,131072,65536][rom[0x149]]||0);
+ let h=2166136261;for(let i=0;i<rom.length;i++)h=Math.imul(h^rom[i],16777619);
+ skey='gbsave2:'+(h>>>0).toString(16)+':'+ssz;dirty=0;
+ const old='gbsave:'+String.fromCharCode(...rom.slice(0x134,0x13F))+(rom[0x14E]<<8|rom[0x14F]);
+ if(pend){ram.set(pend);pend=null;dirty=1;saveNow();return}
+ if(!ssz)return;
+ try{const q=localStorage.getItem(skey),z=q||localStorage.getItem(old);
+  if(z){const b=atob(z);for(let i=0;i<b.length&&i<ssz;i++)ram[i]=b.charCodeAt(i);if(!q)dirty=1}}
+ catch(e){say('No se puede leer el guardado del navegador ('+(e&&e.name||'error')+'). Usa Importar .sav.')}}
+function saveNow(){if(!ssz||!dirty)return;
+ try{let q='';for(let i=0;i<ssz;i++)q+=String.fromCharCode(ram[i]);localStorage.setItem(skey,btoa(q));dirty=0}
+ catch(e){if(!warned){warned=1;say('No se pudo guardar en el navegador ('+(e&&e.name||'error')+'). Usa Exportar .sav.')}}}
+setInterval(saveNow,2000);addEventListener('pagehide',saveNow);document.addEventListener('visibilitychange',saveNow);
+$('sx').onclick=()=>{if(!ssz){say('Este juego no tiene memoria de guardado.');return}
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([ram.slice(0,ssz)]));
+ a.download=(String.fromCharCode(...rom.slice(0x134,0x13F)).replace(/[^\w]/g,'')||'juego')+'.sav';document.body.appendChild(a);a.click();a.remove()};
+$('sv').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
+ if(!lastData){say('Carga primero el ROM del juego.');return}
+ if(!ssz){say('Este juego no tiene memoria de guardado.');return}
+ const d=new Uint8Array(await f.arrayBuffer());
+ if(d.length!=ssz&&d.length!=ssz+44&&d.length!=ssz+48){say('Archivo .sav no válido: tiene '+d.length+' bytes y este juego usa '+ssz+'.');return}
+ pend=d.slice(0,ssz);load(lastData);say('Partida importada y juego reiniciado.')};
+
+/* ---------- cable Link ---------- */
+let scT=0,dc=null,wait=0,pendB=-1,pc=null,host=0;
+function sdone(v){io[1]=v;io[2]&=0x7F;io[15]|=8}
+function slaveGo(b){try{dc.send('2,'+io[1])}catch(_){}sdone(b)}
+function serialW(v){io[2]=v|0x7E;
+ if((v&0x81)==0x81){
+  if(dc&&dc.readyState=='open'){pendB=-1;wait=1;try{dc.send('1,'+io[1])}catch(e){say('Error del cable Link: '+e.message)}setTimeout(()=>{if(wait){wait=0;sdone(255)}},900)}
+  else scT=8}
+ else if((v&0x81)==0x80&&pendB>=0&&dc){const b=pendB;pendB=-1;slaveGo(b)}}
+function onMsg(m){const[t,v]=m.split(',').map(Number);
+ if(t==1){if((io[2]&0x81)==0x80)slaveGo(v);else{pendB=v;setTimeout(()=>{if(pendB==v)pendB=-1},1000)}}
+ else if(t==2&&wait){wait=0;sdone(v)}}
+const enc=d=>btoa(JSON.stringify(d)),dec=q=>JSON.parse(atob(q.trim()));
+const lst=t=>{$('ls').textContent=t};
+function closeLink(){try{pc&&pc.close()}catch(_){}pc=null;dc=null;host=0;wait=0;pendB=-1}
+function mkpc(){pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+ pc.onconnectionstatechange=()=>{if(['failed','disconnected','closed'].includes(pc.connectionState)){dc=null;lst(pc&&pc.connectionState=='failed'?'Falló: la red bloquea el enlace directo (haría falta un servidor TURN).':'Sin conexión')}};
+ pc.ondatachannel=e=>setdc(e.channel)}
+function setdc(ch){dc=ch;ch.onopen=()=>lst('Conectado: ya podéis usar el cable en el juego');
+ ch.onmessage=e=>onMsg(e.data);ch.onclose=()=>{dc=null;lst('Desconectado')}}
+function gathered(){return new Promise(r=>{if(pc.iceGatheringState=='complete')return r();
+ const f=()=>{if(pc.iceGatheringState=='complete'){pc.removeEventListener('icegatheringstatechange',f);r()}};
+ pc.addEventListener('icegatheringstatechange',f);setTimeout(r,5000)})}
+$('lb').onclick=()=>{$('lk').hidden=!$('lk').hidden};
+$('lh').onclick=async()=>{try{closeLink();mkpc();host=1;setdc(pc.createDataChannel('l'));
+ await pc.setLocalDescription(await pc.createOffer());lst('Preparando código…');await gathered();
+ $('lo').value=enc(pc.localDescription);lst('Envía tu código a tu amigo y pega su respuesta abajo')}catch(e){lst('Error: '+(e&&e.message||e))}};
+$('lc').onclick=async()=>{try{const d=dec($('li').value);
+ if(host&&pc){await pc.setRemoteDescription(d);lst('Conectando…')}
+ else{closeLink();mkpc();await pc.setRemoteDescription(d);await pc.setLocalDescription(await pc.createAnswer());
+  lst('Preparando respuesta…');await gathered();$('lo').value=enc(pc.localDescription);lst('Envía este código a tu amigo; conectará solo')}}
+ catch(_){lst('Código no válido')}};
+$('lcp').onclick=()=>{const t=$('lo');if(!t.value)return;t.select();try{navigator.clipboard.writeText(t.value)}catch(_){document.execCommand('copy')}lst('Código copiado')};
+$('ld').onclick=()=>{closeLink();lst('Sin conexión')};
+
+/* ---------- pantalla completa ---------- */
+function fit(){if(!document.body.classList.contains('fs'))return;const g=document.querySelector('.gb');
+ g.style.setProperty('--s',Math.min(innerWidth/g.offsetWidth,innerHeight/g.offsetHeight,3)*.96)}
+function fsOn(){document.body.classList.add('fs');const e=document.documentElement;
+ try{const p=(e.requestFullscreen||e.webkitRequestFullscreen).call(e);if(p&&p.catch)p.catch(()=>{})}catch(_){}
+ requestAnimationFrame(fit)}
+function fsOff(){document.body.classList.remove('fs');
+ try{if(document.fullscreenElement||document.webkitFullscreenElement)(document.exitFullscreen||document.webkitExitFullscreen).call(document)}catch(_){}}
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement)document.body.classList.remove('fs')});
+addEventListener('resize',()=>requestAnimationFrame(fit));
+$('fs').onclick=fsOn;$('fx').onclick=fsOff;
+
+/* ---------- opciones ---------- */
+function relAll(){jp={d:15,b:15}}
+addEventListener('blur',relAll);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)relAll();else if(actx&&actx.state!='running')actx.resume()});
+$('pal').onchange=e=>setPal(+e.target.value);
+$('snd').onclick=e=>{mute=!mute;e.target.textContent='Sonido: '+(mute?'no':'sí')};
+['pointerdown','keydown'].forEach(t=>addEventListener(t,()=>{if(actx&&actx.state!='running')actx.resume()}));
+
+/* ---------- entrada ---------- */
+const M={right:['d',0],left:['d',1],up:['d',2],down:['d',3],a:['b',0],b:['b',1],select:['b',2],start:['b',3]};
+function key(n,dn){const[g,i]=M[n];if(dn){if(jp[g]>>i&1)io[15]|=16;jp[g]&=~(1<<i)}else jp[g]|=1<<i}
+const KM={arrowright:'right',arrowleft:'left',arrowup:'up',arrowdown:'down',z:'a',x:'b',enter:'start',shift:'select',backspace:'select'};
+addEventListener('keydown',e=>{const k=KM[e.key.toLowerCase()];if(k){e.preventDefault();key(k,1)}});
+addEventListener('keyup',e=>{const k=KM[e.key.toLowerCase()];if(k){e.preventDefault();key(k,0)}});
+document.querySelectorAll('.k').forEach(b=>{
+ const n=b.dataset.k;
+ b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);key(n,1);if(navigator.vibrate)try{navigator.vibrate(8)}catch(_){}});
+ ['pointerup','pointercancel'].forEach(t=>b.addEventListener(t,()=>key(n,0)));
+ b.addEventListener('contextmenu',e=>e.preventDefault())});
+</script>
+</body></html>
